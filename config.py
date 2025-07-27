@@ -7,6 +7,11 @@ class Settings(BaseSettings):
     admin_id: int
     mc_host: SecretStr
     mc_port: int
+    rcon_port: int
+    rcon_pass: SecretStr
+    ssh_user: SecretStr
+    ssh_pass: SecretStr
+    ssh_port: int
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
 
 

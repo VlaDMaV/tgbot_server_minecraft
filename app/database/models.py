@@ -22,6 +22,7 @@ class User(Base):
     tg_id = mapped_column(BigInteger)
     name = mapped_column(String(50))
     username = mapped_column(String(50))
+    mc_name = mapped_column(String(50))
     is_subscribed: Mapped[bool] = mapped_column(Boolean, default=False)
     subscribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

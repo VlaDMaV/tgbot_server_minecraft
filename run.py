@@ -6,7 +6,7 @@ from config import config
 from app.handlers import router
 from app.database.models import init_db
 
-from app.database.requests import ping_loop
+from app.database.requests import periodic_save_task, ping_loop, log_watcher_task
 
 logging.basicConfig(level=logging.INFO)
 
@@ -18,9 +18,27 @@ async def main():
     await init_db()
     dp.include_router(router)
 
-    asyncio.create_task(ping_loop(bot))
+    tasks = [
+        asyncio.create_task(ping_loop(bot)),
+        asyncio.create_task(periodic_save_task()),
+        asyncio.create_task(log_watcher_task(
+            host=config.mc_host.get_secret_value(),
+            port=config.ssh_port,
+            user=config.ssh_user.get_secret_value(),
+            password=config.ssh_pass.get_secret_value()
+        ))
+    ]
 
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    except asyncio.CancelledError:
+        logging.info("Polling cancelled.")
+    finally:
+        logging.info("Отмена всех фоновых задач...")
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        logging.info("Все фоновые задачи остановлены.")
 
 
 if __name__ == "__main__":
