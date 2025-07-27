@@ -16,6 +16,7 @@ import app.keyboards as kb
 import app.text as cs
 from aiogram.types import Message
 from config import config
+from app.utils.rcon_utils import RconClient
 
 
 logging.basicConfig(
@@ -189,13 +190,16 @@ def run_rcon_command(command: str, host=config.mc_host.get_secret_value(), port=
         return f"Ошибка RCON: {e}"
     
 
-async def run_rcon_command2(command: str, host=config.mc_host.get_secret_value(), port=config.rcon_port, password=config.rcon_pass.get_secret_value()):
+async def run_rcon_command2(command: str):
     try:
-        from mcrcon import MCRcon
-        def sync_call():
-            with MCRcon(host, password, port=port) as mcr:
-                return mcr.command(command)
-        result = await asyncio.to_thread(sync_call)
+        client = RconClient(
+            host=config.mc_host.get_secret_value(),
+            port=config.rcon_port,
+            password=config.rcon_pass.get_secret_value()
+        )
+        client.connect()
+        result = await client.run_command_async(command)
+        client.disconnect()
         return result
     except Exception as e:
         return f"Ошибка RCON: {e}"
@@ -363,13 +367,9 @@ async def update_mc_name(tg_id: int, mc_name: str):
         await session.commit()
 
 
-async def async_run_rcon_command(command: str):
-    return await asyncio.to_thread(run_rcon_command, command)
-
-
 async def get_scoreboard_stat(mc_name: str, objective: str) -> int | str:
     command = f"scoreboard players get {mc_name} {objective}"
-    output = await async_run_rcon_command(command)
+    output = await run_rcon_command2(command)
 
     print(f"RCON ответ: {output}")
 
