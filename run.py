@@ -5,14 +5,19 @@ from aiogram import Bot, Dispatcher
 from config import config
 from app.handlers import router
 from app.database.models import init_db
+from app.utils.server_task import ServerTasks
+from app.database.requests import ping_loop
 
-from app.database.requests import periodic_save_task, ping_loop, log_watcher_task
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 bot = Bot(token=config.bot_token.get_secret_value())
-
 dp = Dispatcher()
+
 
 async def main():
     await init_db()
@@ -20,13 +25,7 @@ async def main():
 
     tasks = [
         asyncio.create_task(ping_loop(bot)),
-        asyncio.create_task(periodic_save_task()),
-        asyncio.create_task(log_watcher_task(
-            host=config.mc_host.get_secret_value(),
-            port=config.ssh_port,
-            user=config.ssh_user.get_secret_value(),
-            password=config.ssh_pass.get_secret_value()
-        ))
+        asyncio.create_task(ServerTasks(bot).manage_tasks())
     ]
 
     try:

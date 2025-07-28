@@ -1,4 +1,5 @@
 import re
+import time
 import socket
 import asyncio
 import logging
@@ -26,6 +27,9 @@ logging.basicConfig(
 )
 
 bot = Bot(token=config.bot_token.get_secret_value())
+
+processed_lines = set()
+MAX_CACHE_SIZE = 100
 
 
 async def set_user(tg_id, name=None, username=None, is_subscribed=True):
@@ -98,21 +102,19 @@ async def get_all_users() -> list[User]:
         return result.scalars().all()
 
 
-async def is_server_running():
-    """
-    Проверяет доступность Minecraft-сервера через протокол Minecraft.
-    """
-    
-    try:
-        server = await JavaServer.async_lookup(f"{config.mc_host.get_secret_value()}:{config.mc_port}")
-        status = await asyncio.wait_for(server.async_status(), timeout=2.0)
-        return True
-        
-    except (socket.gaierror, ConnectionRefusedError, asyncio.TimeoutError):
-        return False
-    except Exception as e:
-        print(f"Ошибка проверки сервера: {e}")
-        return False
+async def is_server_running(retries=2, delay=1):
+    for attempt in range(retries):
+        try:
+            server = await JavaServer.async_lookup(f"{config.mc_host.get_secret_value()}:{config.mc_port}")
+            status = await asyncio.wait_for(server.async_status(), timeout=2.0)
+            return True
+        except (socket.gaierror, ConnectionRefusedError, asyncio.TimeoutError):
+            if attempt == retries - 1:
+                return False
+            await asyncio.sleep(delay)
+        except Exception as e:
+            logging.error(f"Server check error: {e}")
+            return False
     
 
 async def ping_loop(bot: Bot):
@@ -148,13 +150,6 @@ async def ping_loop(bot: Bot):
         await asyncio.sleep(10) 
 
 
-async def periodic_save_task():
-    while True:
-        await asyncio.sleep(300) 
-        result = run_rcon_command("save-all")
-        logging.info(f"[save-all] Команда выполнена: {result}")
-
-
 def get_server_stats(host: str, port: int, password: str) -> str:
     """
     Возвращает строку с текущей статистикой сервера Minecraft по RCON.
@@ -182,12 +177,19 @@ def get_server_stats(host: str, port: int, password: str) -> str:
         return f"❌ Не удалось получить статистику:\n{e}"
     
 
-def run_rcon_command(command: str, host=config.mc_host.get_secret_value(), port=config.rcon_port, password=config.rcon_pass.get_secret_value()):
-    try:
-        with MCRcon(host, password, port=port) as mcr:
-            return mcr.command(command)
-    except Exception as e:
-        return f"Ошибка RCON: {e}"
+def run_rcon_command(command: str, retries=3, delay=2):
+    for attempt in range(retries):
+        try:
+            with MCRcon(config.mc_host.get_secret_value(), config.rcon_pass.get_secret_value(), config.rcon_port) as mcr:
+                return mcr.command(command)
+        except (ConnectionRefusedError, socket.error, EOFError) as e:
+            logging.warning(f"RCON attempt {attempt + 1} failed: {e}")
+            if attempt == retries - 1:
+                raise
+            time.sleep(delay)
+        except Exception as e:
+            logging.error(f"Unexpected RCON error: {e}")
+            raise
     
 
 async def run_rcon_command2(command: str):
@@ -273,12 +275,25 @@ async def notify_player_death(mc_name: str, death_reason: str):
 
 
 async def process_log_line(line: str):
+    global processed_lines
+
+    if line in processed_lines:
+        return
+    
+    processed_lines.add(line)
+
+    if len(processed_lines) > MAX_CACHE_SIZE:
+        processed_lines.pop()
+
+    if 'Saved the game' in line:
+        return
 
     match = re.search(r'\]: ([^\s]+) joined the game', line)
     if match:
         player = match.group(1)
         logging.info(f"🟢 Игрок {player} подключился к серверу!")
         await bot.send_message(config.admin_id, f"🟢 Игрок {player} подключился к серверу!")
+        return
 
     match_leave = re.search(r'\]: ([^\s]+) left the game', line)
     if match_leave:
@@ -287,10 +302,18 @@ async def process_log_line(line: str):
         await bot.send_message(config.admin_id, f"🔴 Игрок {player} вышел с сервера!")
         return
     
+    rcon_match = re.search(r'\[Not Secure\] \[Rcon\] (.+)', line)
+    if rcon_match:
+        command = rcon_match.group(1)
+        logging.info(f"⚙️ RCON: {command}")
+        await bot.send_message(config.admin_id, f"⚙️ RCON: {command}")
+        return
+    
     match_chat_alt = re.search(r'\[Not Secure\] <([^>]+)> (.+)', line)
     if match_chat_alt:
         player = match_chat_alt.group(1)
         message = match_chat_alt.group(2)
+
         logging.info(f"💬 {player}: {message}")
         await bot.send_message(config.admin_id, f"💬 {player}: {message}")
         return
@@ -299,6 +322,7 @@ async def process_log_line(line: str):
     if match_chat:
         player = match_chat.group(1)
         message = match_chat.group(2)
+        
         logging.info(f"💬 {player}: {message}")
         await bot.send_message(config.admin_id, f"💬 {player}: {message}")
         return
@@ -320,44 +344,31 @@ async def process_log_line(line: str):
     
 
 def ssh_log_reader(host, port, user, password, queue: asyncio.Queue, loop: asyncio.AbstractEventLoop):
-    client = None
-    try:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(hostname=host, port=port, username=user, password=password)
+    while True:
+        client = None
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(
+                hostname=host,
+                port=port,
+                username=user,
+                password=password,
+                timeout=10
+            )
+            stdin, stdout, stderr = client.exec_command("journalctl -u minecraft -f --no-tail")
 
-        stdin, stdout, stderr = client.exec_command("journalctl -u minecraft -f")
+            for line in iter(stdout.readline, ""):
+                if line:
+                    asyncio.run_coroutine_threadsafe(queue.put(line.strip()), loop)
 
-        for line in iter(stdout.readline, ""):
-            if line:
-                # Отправляем строку в asyncio очередь из другого потока
-                asyncio.run_coroutine_threadsafe(queue.put(line.strip()), loop)
-
-    except Exception as e:
-        logging.error(f"SSH error: {e}")
-        asyncio.run_coroutine_threadsafe(queue.put(f"❌ SSH error: {e}"), loop)
-    finally:
-        if client:
-            try:
+        except Exception as e:
+            logging.error(f"SSH error: {e}")
+            asyncio.run_coroutine_threadsafe(queue.put(f"❌ SSH error: {e}"), loop)
+        finally:
+            if client:
                 client.close()
-            except Exception:
-                pass
-    
-
-async def log_watcher_task(host, port, user, password):
-    queue = asyncio.Queue()
-    loop = asyncio.get_running_loop()
-
-    # Запускаем ssh_log_reader в отдельном потоке
-    loop.run_in_executor(None, ssh_log_reader, host, port, user, password, queue, loop)
-
-    try:
-        while True:
-            line = await queue.get()
-            await process_log_line(line)
-    except asyncio.CancelledError:
-        logging.info("Log watcher task cancelled")
-        raise
+            time.sleep(5) 
 
 
 async def update_mc_name(tg_id: int, mc_name: str):

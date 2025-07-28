@@ -134,12 +134,19 @@ async def unsubscribe(callback: CallbackQuery):
 
 @router.callback_query(F.data == "server_stats")
 async def server_stats(callback: CallbackQuery):
-    stats = rq.get_server_stats(host=config.mc_host.get_secret_value(), port=config.rcon_port, password=config.rcon_pass.get_secret_value())
+    await callback.message.edit_text("⏳ Загружаю статистику сервера...")
 
-    await callback.message.edit_text(
-        text=stats,
-        reply_markup=kb.stat_menu
-    )
+    is_up = await rq.is_server_running()
+
+    if is_up:
+        stats = rq.get_server_stats(host=config.mc_host.get_secret_value(), port=config.rcon_port, password=config.rcon_pass.get_secret_value())
+
+        await callback.message.edit_text(
+            text=stats,
+            reply_markup=kb.stat_menu
+        )
+    else:
+        await callback.message.edit_text(text=cs.none_text, parse_mode="HTML",reply_markup=kb.back_to_main)
 
 
 @router.callback_query(F.data == "my_stat")
@@ -155,8 +162,14 @@ async def handle_my_stat(callback: CallbackQuery, state: FSMContext):
         await state.set_state(MCNameState.waiting_for_mc_name)
     else:
         await callback.message.edit_text("⏳ Загружаю вашу статистику...")
-        stats = await rq.get_player_stats(user.mc_name)
-        await callback.message.edit_text(f"📊 Статистика игрока <b>{user.mc_name}</b>:\n\n{stats}", parse_mode="HTML",reply_markup=kb.ower_stat_menu)
+
+        is_up = await rq.is_server_running()
+
+        if is_up:
+            stats = await rq.get_player_stats(user.mc_name)
+            await callback.message.edit_text(f"📊 Статистика игрока <b>{user.mc_name}</b>:\n\n{stats}", parse_mode="HTML",reply_markup=kb.ower_stat_menu)
+        else:
+            await callback.message.edit_text(text=cs.none_text, parse_mode="HTML",reply_markup=kb.back_to_main)
 
 
 @router.callback_query(F.data == "reverse_nik")

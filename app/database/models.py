@@ -30,6 +30,5 @@ class User(Base):
 
 async def init_db():
     async with engine.begin() as conn:
-        # Создаем таблицы, если они не существуют
         await conn.run_sync(Base.metadata.create_all)
     print("База данных и таблицы успешно созданы.")
